@@ -11,7 +11,6 @@ const {
 } = require('telegram');
 const { StringSession } = require('telegram/sessions');
 const input = require('input');
-const { NewMessage, NewMessageEvent } = require('telegram/events');
 
 let client = {};
 
@@ -42,7 +41,7 @@ let client = {};
   client.setLogLevel('error');
   if (settings.botToken) {
     await client.start({botAuthToken: settings.botToken});
-    startBot(client);
+    startBot(client, settings);
   }
   else {
     await client.start({
