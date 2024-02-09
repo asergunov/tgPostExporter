@@ -22,5 +22,14 @@
     "eslint-plugin-vue": "^9.17.0",
     "prettier": "^3.0.3",
     "vite": "^4.4.11"
+  },
+  "cspell": {
+    "version": "0.2",
+    "useGitignore": true,
+    "language": "en,ru",
+    "words": [
+      "pinia",
+      "rushstack"
+    ]
   }
 }

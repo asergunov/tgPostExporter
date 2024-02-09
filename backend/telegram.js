@@ -11,17 +11,19 @@ const {
 } = require('telegram');
 const { StringSession } = require('telegram/sessions');
 const input = require('input');
+const { settings, config } = require('./settings');
 
+/**
+ * @type {TelegramClient}
+ */
 let client = {};
 
 (async () => {
-  let settings = readFileSync('settings.json', 'utf8');
-  settings = JSON.parse(settings);
-  let apiId = settings.apiId,
-    apiHash = settings.apiHash,
-    sessionString = settings.sessionString;
+  let apiId = config.apiId,
+    apiHash = config.apiHash,
+    sessionString = config.sessionString;
 
-  if (!(settings.apiId && settings.apiHash)) {
+  if (!(config.apiId && config.apiHash)) {
     log(`Не хватает данных для авторизации
 1. Залогинься на https://my.telegram.org/apps
 2. Нажми на API Development tools
@@ -30,8 +32,8 @@ let client = {};
 5. Скопируй (с помощью нажатия правой кнопкой мыши по полю ввода) необходимые значения со страницы сюда`);
   }
 
-  if (!settings.apiId) apiId = await input.text('Скопируйте и вставьте сюда ваш api_id ');
-  if (!settings.apiHash) apiHash = await input.text('Скопируйте и вставьте сюда ваш api_hash ');
+  if (!config.apiId) apiId = await input.text('Скопируйте и вставьте сюда ваш api_id ');
+  if (!config.apiHash) apiHash = await input.text('Скопируйте и вставьте сюда ваш api_hash ');
 
   sessionString = new StringSession(sessionString);
 
@@ -39,9 +41,10 @@ let client = {};
     connectionRetries: 5,
   });
   client.setLogLevel('error');
-  if (settings.botToken) {
-    await client.start({botAuthToken: settings.botToken});
-    startBot(client, settings);
+  if (config.botToken) {
+    await client.start({botAuthToken: config.botToken});
+    startBot(client);
+    await settings.set_botSession(client.session.save());
   }
   else {
     await client.start({
@@ -50,10 +53,9 @@ let client = {};
       phoneCode: async () => await input.text('Код подтверждения '),
       onError: (err) => console.log(err),
     });
+    await settings.set_userSession(client.session.save());
   }
-  sessionString = client.session.save();
-
-  writeFileSync('settings.json', JSON.stringify({ ...settings, apiId, apiHash, sessionString }, null, 2), () => {});
+  
   log('Авторизация прошла успешно, можно работать');
 })();
 
@@ -95,3 +97,10 @@ exports.getPosts = async (channelName, postIds, fullLink) => {
 
   return false;
 };
+
+exports.getMessages = async (channelName, postIds, fullLink) => {
+  return client.getMessages(channelName, {
+    ids: postIds,
+    limit: postIds.length,
+  });
+}

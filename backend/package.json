@@ -1,6 +1,18 @@
 {
   "dependencies": {
     "input": "^1.0.1",
+    "node-persist": "^2.1.0",
+    "persistent-cache": "^1.1.2",
     "telegram": "^2.19.10"
+  },
+  "cspell": {
+    "version": "0.2",
+    "useGitignore": true,
+    "language": "en,ru",
+    "words": [
+      "Залогинься",
+      "Repost",
+      "tgstat"
+    ]
   }
 }

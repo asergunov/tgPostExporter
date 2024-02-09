@@ -192,18 +192,13 @@ function debounce(fn, timeout) {
   }
 }
 
-function saveSettings(mutation, { inputText, notes, photoNote, defaultNotes }) {
-  fetch('http://localhost:8083/settings', {
+function saveSettings(mutation, { inputText }) {
+  fetch('http://localhost:8083/input_text', {
     method: 'POST',
     headers: {
-      'Content-Type': 'application/json'
+      'Content-Type': 'text/plain'
     },
-    body: JSON.stringify({
-      inputText,
-      notes,
-      photoNote,
-      defaultNotes
-    })
+    body: inputText
   })
   isSettingsSaving.value = false
 }
