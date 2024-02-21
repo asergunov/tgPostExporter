@@ -1,3 +1,5 @@
 .DS_Store
 server-mac.app
 settings.json
+backend/data/
+backend/.node-persist/

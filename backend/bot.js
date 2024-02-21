@@ -1,33 +1,6 @@
-const { Api, TelegramClient } = require("telegram");
+const { Api, TelegramClient, client } = require("telegram");
 const { NewMessage, NewMessageEvent } = require("telegram/events");
 const { writeFile, existsSync, mkdirSync } = require("fs");
-const { cwd } = require("process");
-const path = require("path");
-const { fileURLToPath } = require("url");
-
-/**
- * @typedef {{
- *  mode: string|bool,
- *  links: RowList,
- *  duplicateLinks: RowList,
- *  listIndex: number,
- *  listPageLines: number}} ChatContext
- */
-/**
- * @type {ChatContext}
- */
-const defaultContext = {
-  mode: false,
-  duplicateLinks: {},
-  links: {},
-  listIndex: 0,
-  listPageLines: 10,
-};
-
-/**
- * @type {Object.<number, ChatContext>}
- */
-let chatContexts = Object.create(null);
 
 /**
  * @typedef {{
@@ -156,10 +129,6 @@ function formatPosts() {
       lastPhotoPositions = null;
     }
 
-    /**
-     * @typedef {{mode: string}} ChatContext
-     */
-
     if (!link && !row.includes(":") && rowNotes) {
       lastNotes = rowNotes;
     }
@@ -177,387 +146,699 @@ function formatPosts() {
 /**
  * @param {FormattedRows}
  */
-void applyFormattedPostsToInputText({links, duplicateLinks})
-{
-  settings.inputText = [...links, "", ...duplicateLinks].join("\n")
-}
+const applyFormattedPostsToInputText = ({ links, duplicateLinks }) =>
+  (settings.inputText = [...links, "", ...duplicateLinks].join("\n"));
 
-class CommandResponder {
-  /**
-   * @callback CommandCallback
-   * @param {NewMessageEvent} event
-   * @param {ChatContext} context
-   * @param {string} extra
-   * @async
-   */
-  /**
-   * @callback Callback
-   * @param {NewMessageEvent} event
-   * @param {ChatContext} context
-   * @async
-   */
-  /**
-   * @callback CommandFilter
-   * @param {NewMessageEvent} event
-   * @param {ChatContext} context
-   * @returns {boolean}
-   */
-  /**
-   * @typedef {{do: CommandCallback, desc?: string, filter: CommandFilter}} CommandDescriptor
-   */
+/**
+ * @callback NewMessageCallback
+ * @param {NewMessageEvent} event
+ * @async
+ */
+
+class TelegramBotChat {
+  #bot;
+  #chat;
+  #onNewMessage;
 
   /**
-   * @param {{commands: Object.<string, CommandDescriptor>, fallback: Callback}}
+   *
+   * @param {TelegramBot} bot
+   * @param {*} chat
+   * @param {{onNewMessage: NewMessageCallback}}
    */
-  constructor({ commands, fallback }) {
-    this._commands = commands;
-    this.fallback = fallback;
-    this._regex = /^(\/[a-z]+)\b\s*(.*)?$/;
+  constructor(bot, chat, { onNewMessage }) {
+    this.#bot = bot;
+    this.#chat = chat;
+    this.#onNewMessage = onNewMessage;
   }
+
+  get bot() {
+    return this.#bot;
+  }
+  get chat() {
+    return this.#chat;
+  }
+
   /**
    *
    * @param {NewMessageEvent} event
    */
-  async respond(event) {
-    const message = event.message.message;
-    const chatId = Number(event.message.chatId);
-
-    if (chatId in chatContexts === false) {
-      chatContexts[chatId] = JSON.parse(JSON.stringify(defaultContext));
-    }
-
-    const context = chatContexts[chatId];
-    const result = message.match(this._regex);
-    if (!result || result[1] in this._commands === false) {
-      return await this.fallback(event, context);
-    }
-
-    const command = this._commands[result[1]];
-    if ("filter" in command && !command.filter(event, context)) {
-      return await this.fallback(event, context);
-    }
-
-    return await command.do(event, context, result[2]);
+  async processNewMessage(event) {
+    return await this.#onNewMessage(event);
   }
 
-  describeAvailableCommands(event, context, filter) {
-    return Object.entries(this._commands)
-      .filter(([, { desc }]) => desc)
+  /**
+   *
+   * @param {import("telegram/client/messages").SendMessageParams} message
+   * @returns {Api.Message}
+   */
+  async sendMessage(message) {
+    return await this.bot.sendMessage(this.chat, message);
+  }
+
+  /**
+   * Receiving next message in that chat
+   * @param {number|undefined} ms
+   */
+  async nextNewMessage(ms) {
+    return await this.#bot.nextNewMessage(this.#chat, ms);
+  }
+}
+
+/**
+ * @typedef {{commands?: CommandDescriptors;onNewMessage?: TelegramBotCommandsCallback;onUnknownCommand?: NewMessageCallback;onText?: NewMessageCallback;}} TelegramBotCommandsSettings
+ */
+
+/**
+ * @callback CommandCallback
+ * @param {NewMessageEvent} event
+ * @param {string} extra
+ * @async
+ */
+
+/**
+ * @callback NewMessageCallback
+ * @param {NewMessageEvent} event
+ * @async
+ */
+
+/**
+ * @callback CommandFilter
+ * @param {NewMessageEvent} event
+ * @returns {boolean}
+ */
+
+/**
+ * @typedef {{on: CommandCallback, desc?: string, filter?: CommandFilter} | CommandCallback} CommandDescriptor
+ * @typedef {Object.<string, CommandDescriptor>} CommandDescriptors
+ */
+
+/**
+ * @callback TelegramBotCommandsCallback
+ * @param {event: CommandDescriptors, onNewMessage: TelegramBotCommandsCallback, onUnknownCommand: NewMessageCallback, onText: NewMessageCallback }
+ */
+class TelegramBotCommands {
+  #commands;
+  #onUnknownCommand;
+  #onText;
+  #onNewMessage;
+  static #regex = /^\/([a-z]+)\b\s*(.*)?$/m;
+
+  /**
+   *
+   * @param {TelegramBotCommandsSettings}
+   */
+  constructor({ commands, onNewMessage, onUnknownCommand, onText }) {
+    this.#commands = commands ?? {};
+    this.#onUnknownCommand = onUnknownCommand ?? (() => {});
+    this.#onText = onText ?? (() => {});
+
+    this.#onNewMessage =
+      onNewMessage ??
+      (async ({ event, onNewMessage, onUnknownCommand, onText }) => {
+        return await onNewMessage({
+          event: event,
+          onUnknownCommand: onUnknownCommand,
+          onText: onText,
+        });
+      });
+  }
+
+  /**
+   *
+   * @param {{event: NewMessageEvent, onUnknownCommand: NewMessageCallback, onText: NewMessageCallback}} param0
+   * @returns
+   */
+  async #processNewMessage({ event, onUnknownCommand, onText }) {
+    const result =
+      event.message.text?.match(TelegramBotCommands.#regex) ?? undefined;
+    if (!result) {
+      return await onText(event);
+    }
+
+    if (result[1] in this.#commands === false) {
+      return await onUnknownCommand(event);
+    }
+    const command = this.#commands[result[1]];
+    if (command.filter && !(await command.filter(event))) {
+      return await onUnknownCommand(event);
+    }
+    return (await command.on(event, result[2])) ?? undefined;
+  }
+
+  /**
+   *
+   * @param {NewMessageEvent} event
+   */
+  async processNewMessage(event) {
+    return await this.#onNewMessage({
+      event: event,
+      onNewMessage: async (...args) => await this.#processNewMessage(...args),
+      onUnknownCommand: async (...args) =>
+        await this.#onUnknownCommand(...args),
+      onText: async (...args) => this.#onText(...args),
+    });
+  }
+
+  /**
+   *
+   * @param {*} event
+   * @param {*} filter
+   * @returns {string}
+   */
+  describeAvailableCommands(event, filter) {
+    return Object.entries(this.#commands)
       .filter(([name]) => !filter || filter(name))
-      .filter(([, { filter }]) => !filter || filter(event, context))
-      .map(([command, { desc }]) => `${command} ${desc}`)
+      .filter(([, { filter }]) => !filter || filter(event))
+      .filter(([, { desc }]) => desc)
+      .map(([command, { desc }]) => `/${command} ${desc}`)
       .join("\n");
   }
 }
 
-async function doAuthorized(event, _do) {
-  const chatId = Number(event.message.chatId);
-  if (settings.isChatAuthorized(chatId)) return await _do();
+class TelegramBot {
+  /**
+   * @type {Map.<*, TelegramBotChat>}
+   */
+  #chats = new Map();
 
-  if (event.message.message.startsWith("/start")) {
-    event.client.sendMessage(`Привет! Скажи пароль.`);
-    return;
+  /**
+   * @type {NewMessageCallback}
+   */
+  #onNewMessage;
+
+  /**
+   * @param {{client: TelegramClient, onChat: NewMessageCallback}}
+   */
+  constructor({ client, onChat }) {
+    this.#onNewMessage = async (event) => {
+      if (!this.#chats.has(event.chatId.toString()))
+        this.#chats.set(event.chatId.toString(), await onChat(event));
+      const chat = this.#chats.get(event.chatId.toString());
+      await chat.processNewMessage(event);
+    };
+    client.addEventHandler(async (event) => {
+      return await this.#onNewMessage(event);
+    }, new NewMessage({}));
   }
-  if (config.botAuthorizationPassword == event.message.text) {
-    settings.setChatAuthorized(chatId);
-    await event.client.sendMessage(event.chatId, {
-      message: "Правильно",
-    });
-  } else {
-    await event.client.sendMessage(event.chatId, {
-      message: "Скажи пароль",
+
+  /**
+   * Receiving next message in that chat
+   * @param {number|undefined} ms
+   * @returns {Promise.<NewMessageEvent>}
+   */
+  nextNewMessage(chat, ms) {
+    return new Promise((resolve, reject) => {
+      const old = this.#onNewMessage;
+      this.#onNewMessage = (event) => {
+        if (event.chat != chat) old(event);
+        else {
+          this.#onNewMessage = old;
+          resolve(event);
+        }
+      };
+      if (ms !== undefined) {
+        setTimeout(() => {
+          this.#onNewMessage = old;
+          reject();
+        }, ms);
+      }
     });
   }
 }
-
-const describeInputText = async () => {
-  return await settings.get_inputText().then((text) => {
-    const lines = [...text].reduce((a, c) => a + (c === "\n" ? 1 : 0), 0);
-    return `В списке строк ${lines}`;
-  });
-};
 
 const LIST_MODES = ["/list", "/dup"];
-const LISTING_COMMANDS = ["/prev", "/next"];
+const LISTING_COMMANDS = ["prev", "next"];
 
-/**
- *
- * @param {ChatContext} context
- */
-function isInListMode(context) {
-  return LIST_MODES.indexOf(context.mode) >= 0;
-}
+class LinkListEditor {
+  #listIndex = 0;
+  #listPageLines = 10;
+  #list;
+  #onEdit;
+  /**
+   * @type {Api.Message}
+   */
+  #message;
+  #buttons;
 
-/**
- *
- * @param {ChatContext} context
- */
-function getPostsList(context) {
-  switch (context.mode) {
-    case "/list":
-      return context.links;
-    case "/dup":
-      return context.duplicateLinks;
+  /**
+   * @typedef {TelegramBotCommandsSettings & {event: NewMessageEvent, list: Array.<string>, onEdit: async ()=>void}} LinkListEditorSettings
+   * @param {LinkListEditorSettings} settings
+   */
+  constructor({ event, list, onEdit, ...settings }) {
+    this.#onEdit = onEdit;
+    this.#list = list;
+  }
+
+  /**
+   *
+   * @param {NewMessageEvent} event
+   */
+  async exec(event) {
+    const backup = [...this.#list];
+
+    const buttons = [
+      [
+        Button.inline("<", Buffer.from("/prev")),
+        Button.inline(">", Buffer.from("/next")),
+      ],
+      [
+        Button.inline("Done", Buffer.from("/done")),
+        Button.inline("Cancel", Buffer.from("/cancel")),
+      ],
+    ];
+
+    let resolve;
+    const waitDone = new Promise((_resolve, rejects) => {
+      resolve = _resolve;
+    });
+
+    const next = async () => {
+      this.#listIndex = Math.min(
+        this.#list.length - 1,
+        this.#listIndex + this.#listPageLines
+      );
+      await message.edit({
+        buttons: buttons,
+        text: this.#describeLinks(event),
+        linkPreview: false,
+      });
+    };
+
+    const prev = async () => {
+      this.#listIndex = Math.max(0, this.#listIndex - this.#listPageLines);
+      await message.edit({
+        buttons: buttons,
+        text: this.#describeLinks(event),
+        linkPreview: false,
+      });
+    };
+
+    const done = async () => {
+      const undoButton = Button.inline("Revert", Buffer.from("/undo"));
+      await this.#onEdit(event);
+      await message.edit({
+        text: "Список отредактирован",
+        buttons: undoButton,
+      });
+
+      /**
+       *
+       * @param {CallbackQueryEvent} callbackEvent
+       */
+      const eventHandler = async (callbackEvent) => {
+        if (callbackEvent.data.toString() != "/undo") return;
+        [...this.#list] = [...backup];
+        this.#onEdit(event);
+        message.delete({ revoke: true });
+        event.client.removeEventHandler(eventHandler, eventType);
+      };
+      const eventType = new CallbackQuery({
+        chats: [event.chatId],
+        func: (event) => {
+          return event.messageId == message.id;
+        },
+      });
+
+      event.client.addEventHandler(eventHandler, eventType);
+
+      resolve();
+    };
+
+    const cancel = async () => {
+      await message.delete({ revoke: true });
+      resolve();
+    };
+    /**
+     *
+     * @param {CallbackQueryEvent} callbackEvent
+     */
+    const eventHandler = async (callbackEvent) => {
+      switch (callbackEvent.data.toString()) {
+        case "/prev":
+          return await prev();
+          break;
+        case "/next":
+          return await next();
+        case "/done":
+          return await done();
+        case "/cancel":
+          return await cancel();
+      }
+    };
+    const eventType = new CallbackQuery({
+      chats: [event.chatId],
+      func: (event) => {
+        return event.messageId == message.id;
+      },
+    });
+
+    event.client.addEventHandler(eventHandler, eventType);
+
+    const message = await event.message.respond({
+      message: this.#describeLinks(event),
+      linkPreview: false,
+      buttons: buttons,
+    });
+
+    await waitDone;
+
+    event.client.removeEventHandler(eventHandler, eventType);
+  }
+
+  /**
+   *
+   * @param {NewMessageEvent} event
+   * @returns
+   */
+  #describeLinks(event) {
+    const listIndex = this.#listIndex;
+    return [
+      ...(listIndex > 0 ? ["..."] : []),
+      ...this.#list
+        .map((msg, index) => `${index + 1}. ${msg}`)
+        .slice(listIndex, listIndex + this.#listPageLines),
+      ...(listIndex + this.#listPageLines < this.#list.length ? ["..."] : []),
+    ].join("\n");
+  }
+
+  /**
+   *
+   * @param {string} input
+   */
+  #indicesFromInput(input) {
+    [...input.matchAll(/\b\d+\b/)].map((s) => Number(s));
+  }
+
+  /**
+   *
+   * @param {Array.<number>} indicesToDelete
+   */
+  #deleteFromList(indicesToDelete) {
+    indicesToDelete
+      .sort()
+      .reverse()
+      .forEach((index) => {
+        if (index >= 0 && index < this.#list.length) {
+          delete this.#list[index];
+        }
+      });
+  }
+
+  /**
+   *
+   * @param {NewMessageEvent} event
+   * @param {Array.<number>} indicesToDelete
+   */
+  async #deleteFromListAndReply(event, indicesToDelete) {
+    this.#deleteFromList(indicesToDelete);
+    await this.#onEdit(event);
+    await event.client.sendMessage(event.chatId, { message: `Готово` });
   }
 }
 
-/**
- *
- * @param {ChatContext} context
- */
-function getRowList(context) {
-  return Object.values(getPostsList(context));
+class BotChat extends TelegramBotChat {
+  #mode = false;
+  #links = {};
+  #duplicateLinks = {};
+  #commands;
+
+  constructor(bot, chat) {
+    super(bot, chat, {
+      onNewMessage: async (event) => {
+        return await this.#commands.processNewMessage(event);
+      },
+    });
+
+    this.#commands = new TelegramBotCommands({
+      commands: {
+        start: {
+          on: async (event) => {
+            const reply = await event.message.respond({
+              message: `Привет! \n${this.#commands.describeAvailableCommands(
+                event
+              )}`, 
+            });
+          },
+        },
+        list: {
+          desc: "Показать отформатированные ссылки",
+          filter: () => Object.keys(this.#links).length > 0,
+          on: async (event) => {
+            return await this.#editList(event, this.#links);
+          },
+        },
+        dup: {
+          desc: "Показать дубликаты",
+          filter: () => Object.keys(this.#duplicateLinks).length > 0,
+          on: async (event) => {
+            return await this.#editList(event, this.#duplicateLinks);
+          },
+        },
+        end: {
+          desc: "Завершить добавление",
+          filter: () => this.#mode == "/add",
+          on: async (event) => {
+            await event.client.sendMessage(event.chatId, {
+              message: `Добавление завершено. ${await this.#describeInputText()}. Можно добавить ещё /add, форматировать /format или выгрузить /csv`,
+            });
+          },
+        },
+        add: {
+          desc: "Добавить ссылок",
+          on: async (event, extra) => {
+            if (extra) {
+              settings.inputText += "\n" + extra;
+              await event.client.invoke(
+                new Api.messages.SendReaction({
+                  peer: event.client.getInputEntity(event.chatId),
+                  msgId: event.messageId,
+                  // reaction: ["☑️"],
+                  reaction: ":)",
+                })
+              );
+              return;
+            }
+            this.#mode = "/add";
+            await event.client.sendMessage(event.message.chatId, {
+              message: "Добавляйте ссылки. Чтобы завершить /end",
+            });
+          },
+        },
+        csv: {
+          desc: "Забрать отчет",
+          on: async (event) => {
+            linksObject = parseLinkList(settings.inputText, config);
+            this.#mode = "/csv";
+            const folderName = (() => {
+              const date = new Date().toLocaleDateString(
+                event.message.sender.langCode || "ru"
+              );
+              let folderName = date;
+              var index = 0;
+              while (existsSync(`reports/${folderName}`)) {
+                index = index + 1;
+                folderName = `${date} (${index})`;
+              }
+              mkdirSync(`reports/${folderName}`);
+              return folderName;
+            })();
+
+            await event.client.sendMessage(event.chatId, {
+              message: `В списке нашлось ссылок ${linksObject.size}. Собираю в папку \`${folderName}\``,
+            });
+
+            const { posts, failedPosts } = await fetchPosts({
+              linksList: linksObject,
+              folderName: folderName,
+            });
+
+            if (posts.length > 0) {
+              const csv = assembleCsv(posts);
+              writeFile(`reports/${folderName}/report.csv`, csv, () => {});
+              const buffer = Buffer.from(csv, "utf8");
+              buffer.name = "report.csv";
+              await event.client.sendFile(event.chatId, {
+                file: buffer,
+                message: "Вот файл с отчетом.",
+              });
+            } else {
+              await event.client.sendMessage(event.chatId, {
+                message: "Отчет пустой",
+              });
+            }
+            if (failedPosts.length > 0) {
+              const csv = assembleCsv(failedPosts);
+              const buffer = Buffer.from(csv, "utf8");
+              writeFile(
+                `reports/${folderName}/failedReport.csv`,
+                csv,
+                () => {}
+              );
+              await event.client.message(event.chatId, {
+                message: `не удалось собрать ${failedPosts.length} постов`,
+              });
+            }
+            this.#mode = false;
+          },
+        },
+        status: {
+          desc: "Статус",
+          on: async (event) => {
+            const describeMode = () => {
+              switch (this.#mode) {
+                case false:
+                  return "Ничего не происходит";
+                case "/add":
+                  return "Добавляем ссылки";
+                case "/csv":
+                  "Готовим csv";
+              }
+            };
+            await event.client.sendMessage(event.message.chatId, {
+              message: `Дела такие: ${describeMode()}. ${await this.#describeInputText()}.`,
+            });
+          },
+        },
+        format: {
+          desc: "Форматировать список",
+          on: async (event) => {
+            const formatted = formatPosts();
+            applyFormattedPostsToInputText(formatted);
+            this.#duplicateLinks = formatted.duplicateLinks;
+            this.#links = formatted.links;
+
+            await event.client.sendMessage(event.chatId, {
+              message: `Готово. ${await this.#describeInputText()}. ${this.#describeFormattedLinks()}.\n${this.#commands.describeAvailableCommands(
+                event,
+                (cmd) => LIST_MODES.indexOf(cmd) >= 0
+              )}`,
+            });
+          },
+        },
+      },
+    });
+  }
+
+  async #describeInputText() {
+    return await settings.get_inputText().then((text) => {
+      const lines = [...text].reduce((a, c) => a + (c === "\n" ? 1 : 0), 0);
+      return `В списке строк ${lines}`;
+    });
+  }
+
+  #describeFormattedLinks() {
+    return `Ссылок ${this.#links.length}. Дубликатов ${
+      this.#duplicateLinks.length
+    }`;
+  }
+
+  async #editList(event, list) {
+    const listCommands = new LinkListEditor({
+      event: event,
+      list: list,
+      onEdit: () => {
+        applyFormattedPostsToInputText({
+          links: this.#links,
+          duplicateLinks: this.#duplicateLinks,
+        });
+      },
+      onUnknownCommand: (event) => {
+        done = this.#commands.processNewMessage(event);
+      },
+    });
+    await listCommands.exec(event);
+  }
 }
 
-/**
- *
- * @param {NewMessageEvent} event
- * @param {ChatContext} context
- * @returns
- */
-function describeLinks(event, context) {
-  const listIndex = context.listIndex;
-  const rows = getRowList(context);
-  return [
-    ...(listIndex > 0 ? ["..."] : []),
-    ...rows
-      .map((msg, index) => `${index + 1}. ${msg}`)
-      .slice(listIndex, listIndex + context.listPageLines),
-    ...(listIndex + context.listPageLines < rows.length ? ["..."] : []),
-    responder.describeAvailableCommands(
-      event,
-      context,
-      (name) => LISTING_COMMANDS.indexOf(name) >= 0
-    ),
-  ].join("\n");
+class Bot extends TelegramBot {
+  constructor(client) {
+    super({
+      client: client,
+      onChat: async (event) => {
+        while (!(await settings.isChatAuthorized(event.chatId))) {
+          if (event.message.text == config.botAuthorizationPassword) break;
+
+          const password_request_message = await event.message.respond({
+            message: "Нужен пароль",
+            buttons: [
+              [Button.inline("1"), Button.inline("2"), Button.inline("3")],
+              [Button.inline("4"), Button.inline("5"), Button.inline("6")],
+              [Button.inline("7"), Button.inline("8"), Button.inline("9")],
+              [Button.inline("Del"), Button.inline("0"), Button.inline("OK")],
+            ],
+          });
+
+          await new Promise((resolve, reject) => {
+            let pass = "";
+            /**
+             *
+             * @param {CallbackQueryEvent} event
+             */
+            const callback = async (event) => {
+              const dataStr = event.data.toString();
+              if (dataStr === "Del") pass = pass.slice(0, -1);
+              else if (dataStr === "OK") {
+                if (pass == config.botAuthorizationPassword) {
+                  await settings.setChatAuthorized(event.chatId);
+                  await event.client.editMessage(
+                    password_request_message.chatId,
+                    {
+                      buttons: Button.clear(),
+                      message: password_request_message.id,
+                      text: "Правильно",
+                    }
+                  );
+                  resolve();
+                } else {
+                  await event.client.editMessage(
+                    password_request_message.chatId,
+                    {
+                      buttons: Button.clear(),
+                      message: password_request_message.id,
+                      text: "Не правильно. Попробуйте через 5 секунд.",
+                    }
+                  );
+                  setTimeout(resolve, 5000);
+                }
+                event.client.removeEventHandler(callback, query);
+                return;
+              } else pass += dataStr;
+              event.answer({ message: `Pass: ${pass}` });
+            };
+            const query = new CallbackQuery({
+              func: (event) => event.messageId === password_request_message.id,
+            });
+            event.client.addEventHandler(callback, query);
+          });
+        }
+        return new BotChat(this, event.chat);
+      },
+    });
+  }
 }
 
-const responder = new CommandResponder({
-  commands: {
-    "/start": {
-      do: async (event, context) => {
-        await event.client.sendMessage(event.message.chatId, {
-          message: `Привет! \n${responder.describeAvailableCommands(
-            event,
-            context
-          )}`,
-        });
-      },
-    },
-    "/list": {
-      desc: "Показать отформатированные ссылки",
-      filter: (event, context) => Object.keys(context.links).length > 0,
-      do: async (event, context) => {
-        context.mode = "/list";
-        context.listIndex = 0;
-        await event.client.sendMessage(event.chatId, {
-          message: describeLinks(event, context),
-          linkPreview: false,
-        });
-      },
-    },
-    "/dup": {
-      desc: "Показать дубликаты",
-      filter: (event, context) =>
-        Object.keys(context.duplicateLinks).length > 0,
-      do: async (event, context) => {
-        context.mode = "/dup";
-        context.listIndex = 0;
-        await event.client.sendMessage(event.chatId, {
-          message: describeLinks(event, context),
-          linkPreview: false,
-        });
-      },
-    },
-    "/end": {
-      desc: "Завершить добавление",
-      filter: (event, context) => context.mode == "/add",
-      do: async (event) => {
-        await event.client.sendMessage(event.chatId, {
-          message: `Добавление завершено. ${await describeInputText()}. Можно добавить ещё /add, форматировать /format или выгрузить /csv`,
-        });
-      },
-    },
-    "/add": {
-      desc: "Добавить ссылок",
-      do: async (event, context) => {
-        context.mode = "/add";
-        await event.client.sendMessage(event.message.chatId, {
-          message: "Добавляйте ссылки. Чтобы завершить /end",
-        });
-      },
-    },
-    "/csv": {
-      desc: "Забрать отчет",
-      do: async (event, context) => {
-        linksObject = parseLinkList(settings.inputText, config);
-        context.mode = "/csv";
-        const folderName = (() => {
-          const date = new Date().toLocaleDateString(
-            event.message.sender.langCode || "ru"
-          );
-          let folderName = date;
-          var index = 0;
-          while (existsSync(`reports/${folderName}`)) {
-            index = index + 1;
-            folderName = `${date} (${index})`;
-          }
-          mkdirSync(`reports/${folderName}`);
-          return folderName;
-        })();
-
-        await event.client.sendMessage(event.chatId, {
-          message: `В списке нашлось ссылок ${linksObject.size}. Собираю в папку \`${folderName}\``,
-        });
-
-        const { posts, failedPosts } = await fetchPosts({
-          linksList: linksObject,
-          folderName: folderName,
-        });
-
-        if (posts.length > 0) {
-          const csv = assembleCsv(posts);
-          writeFile(`reports/${folderName}/report.csv`, csv, () => {});
-          const buffer = Buffer.from(csv, "utf8");
-          buffer.name = "report.csv";
-          await event.client.sendFile(event.chatId, {
-            file: buffer,
-            message: "Вот файл с отчетом.",
-          });
-        } else {
-          await event.client.sendMessage(event.chatId, {
-            message: "Отчет пустой",
-          });
-        }
-        if (failedPosts.length > 0) {
-          const csv = assembleCsv(failedPosts);
-          const buffer = Buffer.from(csv, "utf8");
-          writeFile(`reports/${folderName}/failedReport.csv`, csv, () => {});
-          await event.client.message(event.chatId, {
-            message: `не удалось собрать ${failedPosts.length} постов`,
-          });
-        }
-        context.mode = false;
-      },
-    },
-    "/status": {
-      desc: "Статус",
-      do: async (event, context) => {
-        const describeMode = () => {
-          switch (context.mode) {
-            case false:
-              return "Ничего не происходит";
-            case "/add":
-              return "Добавляем ссылки";
-            case "/csv":
-              "Готовим csv";
-          }
-        };
-        await event.client.sendMessage(event.message.chatId, {
-          message: `Дела такие: ${describeMode()}. ${await describeInputText()}.`,
-        });
-      },
-    },
-    "/format": {
-      desc: "Форматировать список",
-      do: async (event, state) => {
-        const formatted  = formatPosts();
-        applyFormattedPostsToInputText(formatted)
-        state.duplicateLinks = formatted.duplicateLinks;
-        state.links = formatted.links;
-
-        await event.client.sendMessage(event.chatId, {
-          message: `Готово. ${await describeInputText()}. Ссылок ${
-            links.length
-          }. Дубликатов ${
-            duplicateLinks.length
-          }.\n${responder.describeAvailableCommands(
-            event,
-            state,
-            (cmd) => LIST_MODES.indexOf(cmd) >= 0
-          )}`,
-        });
-      },
-    },
-    "/next": {
-      desc: "Вперёд",
-      filter: (event, context) =>
-        isInListMode(context) &&
-        context.listIndex + context.listPageLines < getRowList(context).length,
-      do: async (event, context) => {
-        context.listIndex = Math.min(
-          getRowList(context).length - 1,
-          context.listIndex + context.listPageLines
-        );
-        await event.client.sendMessage(event.chatId, {
-          message: describeLinks(event, context),
-          linkPreview: false,
-        });
-      },
-    },
-    "/prev": {
-      desc: "Назад",
-      filter: (event, context) =>
-        isInListMode(context) && context.listIndex > 0,
-      do: async (event, context) => {
-        context.listIndex = Math.max(
-          0,
-          context.listIndex - context.listPageLines
-        );
-        await event.client.sendMessage(event.chatId, {
-          message: describeLinks(event, context),
-          linkPreview: false,
-        });
-      },
-    },
-    '/del': {
-      desc: 'Удалить',
-      filter: (event, context) => isInListMode(context),
-      do: (event, filter, extra) => {
-
-      }
-    }
-  },
-  fallback: async (event, context) => {
-    if (context.mode === "/add") {
-      settings.inputText = [settings.inputText, event.message.text].join("\n");
-      await event.client.sendMessage(event.chatId, {
-        message: `${await describeInputText()}. Чтобы завершить /end`,
-      });
-    }
-  },
-});
 /**
  *
  * @param {TelegramClient} client
  */
 exports.startBot = function (client) {
-  client.setParseMode("md2");
-  client.addEventHandler(
-    /**
-     *
-     * @param {NewMessageEvent} event
-     */
-    async (event) => {
-      await doAuthorized(event, async () => await responder.respond(event));
-    },
-    new NewMessage({})
-  );
-
-  client.addEventHandler(
-    /**
-     *
-     * @param {Api.TypeUpdate} event
-     */
-    async (event) => {
-      if (event instanceof Api.UpdateChatParticipant) {
-        // Added to chat
-      }
-      console.log(event);
-    }
-  );
+  return new Bot(client);
 };
 
 const { settings, config } = require("./settings");
 const { fetchPosts, assembleCsv } = require("./server");
-const { pathToFileURL } = require("url");
+const {
+  message: password_request_message,
+  message,
+} = require("telegram/client");
+const { eventNames } = require("process");
+const { Button } = require("telegram/tl/custom/button");
+const { text } = require("input");
+const {
+  CallbackQuery,
+  CallbackQueryEvent,
+} = require("telegram/events/CallbackQuery");
+const { resolve } = require("path");
+const { rejects } = require("assert");
+const { buildReplyMarkup } = require("telegram/client/buttons");

@@ -1,45 +1,47 @@
 const { readFileSync } = require("fs");
 
-storage = require("node-persist");
-storage.initSync();
+const settings = require("node-persist");
+settings.initSync({
+  dir: 'data/settings'  
+});
 
 KEYS = {
-  inputText: "inputText",
-  botToken: "botToken",
-  userSession: "userSession",
-  botSession: "botSession",
+  inputText: "",
+  botToken: "",
+  userSession: "",
+  botSession: "",
 };
 
-Object.entries(KEYS).forEach(([prop, key]) => {
-  Object.defineProperty(storage, "get_" + prop, {
-    value: function () {
-      return this.get(key);
+Object.entries(KEYS).forEach(([key, defaultValue]) => {
+  Object.defineProperty(settings, "get_" + key, {
+    value: async function () {
+      return await this.get(key) ?? defaultValue;
     },
   });
-  Object.defineProperty(storage, "set_" + prop, {
+  Object.defineProperty(settings, "set_" + key, {
     value: function (value) {
       return this.set(key, value);
     },
   });
-  Object.defineProperty(storage, prop, {
+  Object.defineProperty(settings, key, {
     get: function () {
-      return this.getItemSync(key);
+      return this.getItemSync(key) ?? defaultValue;
     },
     set: function (value) {
-      return this.setItemSync(key, value);
+      return this.setItemSync(key, value ?? defaultValue);
     },
   });
 });
 
 Object.entries({
   isChatAuthorized: function (chatId) {
-    return this.get(`isChatAuthorized_${chatId}`);
+    return this.get(`isChatAuthorized_${chatId}`) ?? false;
   },
   setChatAuthorized: function (chatId) {
     return this.set(`isChatAuthorized_${chatId}`, true);
   },
 }).forEach(([key, value]) => {
-  Object.defineProperty(storage, key, {value: value});
+  Object.defineProperty(settings, key, {value: value});
 });
 
 
@@ -58,4 +60,4 @@ Object.entries({
  * @type {Config}
  */
 exports.config = JSON.parse(readFileSync("settings.json", "utf8"));
-exports.settings = storage
+exports.settings = settings

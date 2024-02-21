@@ -1,4 +1,4 @@
-const { log } = require('console');
+const { log, timeStamp } = require('console');
 const { writeFileSync, readFileSync } = require('fs');
 const { startBot } = require('./bot');
 
@@ -40,7 +40,7 @@ let client = {};
   client = new TelegramClient(sessionString, Number(apiId), apiHash, {
     connectionRetries: 5,
   });
-  client.setLogLevel('error');
+  client.setLogLevel('debug');
   if (config.botToken) {
     await client.start({botAuthToken: config.botToken});
     startBot(client);
@@ -88,7 +88,18 @@ exports.getPosts = async (channelName, postIds, fullLink) => {
       })
     );
 
-    if (post.messages[0].className === 'MessageEmpty') return false;
+    if (post.messages[0].className === 'MessageEmpty') {
+      const entity = await client.getEntity(channelName);
+      postIds = [postIds[0]-1, postIds[0], postIds[0]+1]
+      
+      const msg = await client.getMessages(entity, { ids: postIds });
+
+      const lastMsgs = await client.getMessages(entity, {
+        limit: 10,
+        offsetDate: Math.floor(new Date().getTime() / 1000),
+      });
+      return false;
+    }
 
     return post;
   } catch (e) {
